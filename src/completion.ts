@@ -109,7 +109,7 @@ export class Completion {
                 if (this.shouldDiscardSuggestion(suggestionLines, document, position, linePrefix, lineSuffix)) {
                     continue
                 } else {
-                    compl = this.updateSuggestion(suggestionLines, lineSuffix);
+                    compl = this.updateSuggestion(suggestionLines, lineSuffix, linePrefix);
                     newCompletions.push(compl);
                     if (firstComplLines.length == 0) firstComplLines = suggestionLines;
                 }     
@@ -138,7 +138,7 @@ export class Completion {
             }, 0);
             this.isRequestInProgress = false
             this.app.logger.addEventLog(group, "NORMAL_RETURN", firstComplLines[0])
-            return this.getCompletion(newCompletions||[], position, spacesToRemove);
+            return this.getCompletion(newCompletions||[], position, spacesToRemove, lineSuffix);
         } catch (err) {
             console.error("Error fetching llama completion:", err);
             vscode.window.showInformationMessage(this.app.configuration.getUiText(`Error getting response. Please check if llama.cpp server is running.`)??"");
@@ -200,12 +200,15 @@ export class Completion {
 
     getCompletion = (completions: string[], 
         position: vscode.Position,
-        spacesToRemove: number): vscode.InlineCompletionItem[] => {
+        spacesToRemove: number,
+        lineSuffix: string = ""): vscode.InlineCompletionItem[] => {
         let completionItems: vscode.InlineCompletionItem[] = []
         for (const completion of completions){
+            // a multi-line suggestion that absorbed the auto-closed suffix replaces the rest of the line
+            const replacesSuffix = this.absorbsSuffix(completion.split("\n"), lineSuffix);
             const compl: vscode.InlineCompletionItem = new vscode.InlineCompletionItem(
                 this.removeLeadingSpaces(completion, spacesToRemove),
-                new vscode.Range(position, position)
+                new vscode.Range(position, replacesSuffix ? position.translate(0, lineSuffix.length) : position)
             )
             completionItems.push(compl);
         }
@@ -261,12 +264,40 @@ export class Completion {
     }
 
     // cut part of the completion in some special cases
-    updateSuggestion = (suggestionLines: string[], lineSuffix: string) => {
+    updateSuggestion = (suggestionLines: string[], lineSuffix: string, linePrefix: string = "") => {
         if (lineSuffix.trim() != "") {
             if (suggestionLines[0].endsWith(lineSuffix)) return suggestionLines[0].slice(0, -lineSuffix.length);
+            if (suggestionLines.length > 1 && this.isClosingOnly(lineSuffix)) {
+                const indent = Utils.getLeadingSpaces(linePrefix);
+                // e.g. `foo(|)` -> model wrote `a) {\n ...\n}`: the suggestion already contains the
+                // auto-closed suffix, so use the whole (balanced) block; getCompletion() replaces the rest of the line
+                if (this.absorbsSuffix(suggestionLines, lineSuffix))
+                    return this.cutAtBalancedBlock(suggestionLines, linePrefix);
+                // e.g. `forEach((it) => {|});` -> model wrote only the body: keep the suffix, move it to its own line
+                if (suggestionLines[0].trim() == "")
+                    return suggestionLines.join("\n") + "\n" + indent;
+            }
             if (suggestionLines.length > 1) return suggestionLines[0];
         }
 
+        return suggestionLines.join("\n");
+    }
+
+    // rest of the line is only auto-closed brackets/quotes/punctuation, e.g. `)`, `}`, `});`, `")`
+    private isClosingOnly = (lineSuffix: string) => /^[\s)\]}>;,'"`]+$/.test(lineSuffix);
+
+    private absorbsSuffix = (suggestionLines: string[], lineSuffix: string) =>
+        lineSuffix.trim() != "" && this.isClosingOnly(lineSuffix) && suggestionLines.length > 1
+        && suggestionLines.join("\n").includes(lineSuffix.trim());
+
+    // drop what the model wrote after the block it opened was closed again (e.g. the next statement)
+    private cutAtBalancedBlock = (suggestionLines: string[], linePrefix: string) => {
+        const delta = (t: string) => (t.match(/[(\[{]/g) || []).length - (t.match(/[)\]}]/g) || []).length;
+        let depth = delta(linePrefix);
+        for (let i = 0; i < suggestionLines.length; i++) {
+            depth += delta(suggestionLines[i]);
+            if (i > 0 && depth <= 0) return suggestionLines.slice(0, i + 1).join("\n");
+        }
         return suggestionLines.join("\n");
     }
 
