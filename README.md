@@ -1,5 +1,27 @@
 # llama.vscode
 
+> [!NOTE]
+> **This is a fork of [ggml-org/llama.vscode](https://github.com/ggml-org/llama.vscode).**
+> It exists to carry a fix for code completion when VS Code has auto-closed a bracket
+> after the cursor (branch [`fix/fim-auto-closed-brackets`](../../tree/fix/fim-auto-closed-brackets)).
+>
+> **The problem (upstream 0.0.78):** type `function parseValue(` in a JS file. VS Code adds `)`,
+> leaving the cursor at `function parseValue(|)`. The model suggests a full function, but the
+> extension keeps only its first line and inserts it in front of the `)`. Pressing `Tab` gives
+> `function parseValue(value) {)` with no body. With the cursor at `{|}` or `{|});`, no
+> suggestion appears at all. The cause is `updateSuggestion()` in `src/completion.ts`, which
+> trims a suggestion to its first line whenever there is text after the cursor (introduced in #18).
+>
+> **The fix:** when the rest of the line holds only closing characters (`)`, `}`, `});`, …),
+> a suggestion that already contains them replaces the rest of the line instead of being inserted
+> before it. A suggestion that holds only the body keeps the closing characters on their own line.
+> All other cases behave as upstream.
+>
+> **Known limits:** partial accept (`Shift + Tab`, `Ctrl/Cmd + Right Arrow`) is not fixed. Bracket
+> counting ignores strings and comments.
+>
+> The aim is to offer this fix upstream. Everything below is the upstream README.
+
 Local LLM-assisted text completion, chat with AI and agentic coding extension for VS Code
 
 ![image](https://github.com/user-attachments/assets/857acc41-0b6c-4899-8f92-3020208a21eb)
